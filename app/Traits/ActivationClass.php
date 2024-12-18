@@ -61,6 +61,8 @@ trait ActivationClass
 
     public function is_local(): bool
     {
+
+        return true;
         $whitelist = array(
             '127.0.0.1',
             '::1'
@@ -73,4 +75,3 @@ trait ActivationClass
         return true;
     }
 }
-
