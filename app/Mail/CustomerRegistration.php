@@ -6,10 +6,11 @@ use App\CentralLogics\Helpers;
 use App\Models\BusinessSetting;
 use App\Models\EmailTemplate;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
 
-class CustomerRegistration extends Mailable
+class CustomerRegistration extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
 

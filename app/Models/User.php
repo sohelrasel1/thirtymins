@@ -64,6 +64,11 @@ class User extends Authenticatable
         return Helpers::get_full_url('profile',$value,'public');
     }
 
+    public function getFullNameAttribute()
+    {
+        return $this->f_name . ' ' . $this->l_name;
+    }
+
     public function orders()
     {
         return $this->hasMany(Order::class)->where('is_guest', 0);

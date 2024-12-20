@@ -21,14 +21,64 @@ use App\Models\EmailVerifications;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\Controller;
+use App\Jobs\CustomerSignUp;
+use Exception;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Modules\Gateways\Traits\SmsGateway;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rules\Password;
+use PhpParser\Node\Stmt\Catch_;
 
 class CustomerAuthController extends Controller
 {
+    public function verifySignUpOtp(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'otp' => 'required',
+            'email' => 'required',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => Helpers::error_processor($validator)], 403);
+        }
+
+        $cachedOtp = Cache::get('otp_' . $request->email);
+        if ($cachedOtp != $request->otp) {
+            return response()->json(['message' => 'Invalid OTP.'], 400);
+        }
+        // Retrieve cached user data
+        $cacheKey = 'user_registration_' . $request->email;
+        $userData = Cache::get($cacheKey);
+
+        if (!$userData) {
+            return response()->json(['message' => 'User data not found or expired.Please again signup'], 400);
+        }
+
+        try {
+            DB::beginTransaction();
+            $userData['is_email_verified'] = 1;
+            $user = new User($userData);
+            $user->save();
+            $token = null;
+            if (auth()->loginUsingId($user->id)) {
+                $token = auth()->user()->createToken('RestaurantCustomerAuth')->accessToken;
+            }
+
+            CustomerSignUp::dispatch($user)->afterCommit();
+
+            DB::commit();
+            // Clear cached data
+            Cache::forget($cacheKey);
+            Cache::forget('otp_' . $request->email);
+            return response()->json(['token' => $token, 'user' => $user]);
+        } catch (Exception $ex) {
+            DB::rollBack();
+            logs()->error('Signup Error', [$ex]);
+            return response()->json(['message' => 'something went wrong on server'], 500);
+        }
+    }
     public function verify_phone_or_email(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -421,7 +471,7 @@ class CustomerAuthController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'name' => 'required',
-            'email' => 'unique:users',
+            'email' => 'required|email|unique:users',
             'phone' => 'required|unique:users',
             'password' => ['required', Password::min(8)],
 
@@ -477,21 +527,24 @@ class CustomerAuthController extends Controller
         $firstName = $nameParts[0];
         $lastName = $nameParts[1] ?? '';
 
-        $user = User::create([
+        $user = [
             'f_name' => $firstName,
             'l_name' => $lastName,
             'email' => $request->email,
             'phone' => $request->phone,
             'ref_by' =>   $ref_by,
-            'password' => bcrypt($request->password)
-        ]);
-        $user->ref_code = Helpers::generate_referer_code($user);
-        $user->save();
+            'password' => bcrypt($request->password),
+            'ref_code' => Helpers::generate_referer_code(),
+        ];
 
-        $token = $user->createToken('RestaurantCustomerAuth')->accessToken;
+        $cacheKey = 'user_registration_' . $request->email;
+
+        Cache::put($cacheKey, $user, now()->addMinutes(15));
+    
 
         $login_settings = array_column(BusinessSetting::whereIn('key',['manual_login_status','otp_login_status','social_login_status','google_login_status','facebook_login_status','apple_login_status','email_verification_status','phone_verification_status'
         ])->get(['key','value'])->toArray(), 'value', 'key');
+
         $firebase_otp_verification = BusinessSetting::where('key', 'firebase_otp_verification')->first()?->value??0;
         $phone = 1;
         $mail = 1;
@@ -552,12 +605,14 @@ class CustomerAuthController extends Controller
             if(env('APP_MODE') == 'test'){
                 $otp = '123456';
             }
-            DB::table('email_verifications')->updateOrInsert(['email' => $request['email']],
-                [
-                    'token' => $otp,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
+
+            Cache::put('otp_' . $request->email, $otp, now()->addMinutes(15));
+            // DB::table('email_verifications')->updateOrInsert(['email' => $request['email']],
+            //     [
+            //         'token' => $otp,
+            //         'created_at' => now(),
+            //         'updated_at' => now(),
+            //     ]);
 
             try {
                 $mailResponse= null;
@@ -581,25 +636,9 @@ class CustomerAuthController extends Controller
             }
         }
 
-
-        try
-        {
-            $notification_status= Helpers::getNotificationStatusData('customer','customer_registration','mail_status');
-            if($notification_status && config('mail.status') && $request->email && Helpers::get_mail_status('registration_mail_status_user') == '1') {
-                Mail::to($request->email)->send(new \App\Mail\CustomerRegistration($request?->name));
-            }
-        }
-        catch(\Exception $ex)
-        {
-            info($ex->getMessage());
-        }
-
         $user_email = null;
-        if($user->email){
-            $user_email = $user->email;
-        }
 
-        return response()->json(['token' => $token, 'is_phone_verified'=>$phone, 'is_email_verified'=>$mail, 'is_personal_info' => 1, 'is_exist_user' =>null, 'login_type' => 'manual', 'email' => $user_email], 200);
+        return response()->json(['token' => null, 'is_phone_verified' => $phone, 'is_email_verified' => $mail, 'is_personal_info' => 1, 'is_exist_user' => null, 'login_type' => 'manual', 'email' => $request->email], 200);
     }
 
     public function login(Request $request)
@@ -1312,5 +1351,4 @@ class CustomerAuthController extends Controller
             'errors' => $errors
         ], 403);
     }
-
 }
