@@ -40,7 +40,7 @@ return [
         'order_attachment'=>false,
         'always_open'=>false,
         'all_zone_service'=>false,
-        'item_available_time'=>true,
+        'item_available_time' => false,
         'show_restaurant_text'=>true,
         'is_parcel'=>false,
         'organic'=>false,
