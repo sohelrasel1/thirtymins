@@ -11,11 +11,15 @@ use App\Models\BusinessSetting;
 use App\CentralLogics\SMS_module;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\Controller;
+use App\Mail\UserPasswordResetMail;
+use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Modules\Gateways\Traits\SmsGateway;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rules\Password;
+
+use function Laravel\Prompts\error;
 
 class PasswordResetController extends Controller
 {
@@ -31,7 +35,14 @@ class PasswordResetController extends Controller
 
         $firebase_otp_verification = BusinessSetting::where('key', 'firebase_otp_verification')->first()->value??0;
 
-        $customer = User::Where(['phone' => $request['phone']])->first();
+        $phone = $request->phone;
+        $customer = User::query()
+            ->when(filter_var($request->phone, FILTER_VALIDATE_EMAIL), function ($query) use ($phone) {
+                return $query->where('email', $phone);
+            }, function ($query) use ($phone) {
+                return $query->where('phone', $phone);
+            })
+            ->first();
 
         if (isset($customer)) {
             if($firebase_otp_verification)
@@ -40,7 +51,7 @@ class PasswordResetController extends Controller
             }
 
             $otp_interval_time= 60; //seconds
-            $password_verification_data= DB::table('password_resets')->where('phone', $customer['phone'])->first();
+            $password_verification_data = DB::table('password_resets')->where('email', $customer['phone'])->first();
             if(isset($password_verification_data) &&  Carbon::parse($password_verification_data->created_at)->DiffInSeconds() < $otp_interval_time){
                 $time= $otp_interval_time - Carbon::parse($password_verification_data->created_at)->DiffInSeconds();
                 $errors = [];
@@ -56,7 +67,9 @@ class PasswordResetController extends Controller
             if(env('APP_MODE') == 'test'){
                 $token = '123456';
             }
-            DB::table('password_resets')->updateOrInsert(['phone' => $customer['phone']],
+
+            DB::table('password_resets')->updateOrInsert(
+                ['email' => $customer['email']],
                 [
                     'token' => $token,
                     'created_at' => now(),
@@ -71,15 +84,23 @@ class PasswordResetController extends Controller
                 $published_status = $payment_published_status[0]['is_published'];
             }
 
-            if($published_status == 1){
-                $response = SmsGateway::send($request['phone'],$token);
-            }else{
-                $response = SMS_module::send($request['phone'],$token);
+            // if($published_status == 1){
+            //     $response = SmsGateway::send($request['phone'],$token);
+            // }else{
+            //     $response = SMS_module::send($request['phone'],$token);
+            // }
+
+            try {
+
+                Mail::to($customer->email)->send(new UserPasswordResetMail($token, $customer->full_name));
+                $response = 'success';
+            } catch (Exception $ex) {
+                error('Failed to send reset password mail', [$ex]);
             }
 
             if($response == 'success' || env('APP_MODE') == 'test')
             {
-                return response()->json(['message' => translate('messages.Otp_Successfully_Sent_To_Your_Phone')], 200);
+                return response()->json(['message' => translate('messages.Otp_Successfully_Sent_To_Your_Email')], 200);
             }
             else
             {
@@ -90,24 +111,42 @@ class PasswordResetController extends Controller
             }
         }
         return response()->json(['errors' => [
-            ['code' => 'not-found', 'message' =>  translate('messages.Phone_number_not_found!')]
+            ['code' => 'not-found', 'message' =>  translate('messages.email_or_phone_number_not_found!')]
         ]], 404);
     }
 
     public function verify_token(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'phone' => 'required|regex:/^([0-9\s\-\+\(\)]*)$/|min:9',
+            'phone' => [
+                'required', // The field is required
+                function ($attribute, $value, $fail) {
+                    if (
+                        !filter_var($value, FILTER_VALIDATE_EMAIL) &&
+                        !preg_match('/^([0-9\s\-\+\(\)]*)$/', $value)
+                    ) {
+                        $fail('The ' . $attribute . ' must be a valid phone number or email address.');
+                    }
+                },
+            ],
             'reset_token'=> 'required'
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => Helpers::error_processor($validator)], 403);
         }
-        $user=User::where('phone', $request->phone)->first();
+        $phone = $request->phone;
+        $user = User::query()
+            ->when(filter_var($phone, FILTER_VALIDATE_EMAIL), function ($query) use ($phone) {
+                return $query->where('email', $phone);
+            }, function ($query) use ($phone) {
+                return $query->where('phone', $phone);
+            })
+            ->first();
+
         if (!isset($user)) {
             return response()->json(['errors' => [
-                ['code' => 'not-found', 'message' => translate('Phone_number_not_found!')]
+                ['code' => 'not-found', 'message' => translate('Email_or_Phone_number_not_found!')]
             ]], 404);
         }
 
@@ -122,7 +161,8 @@ class PasswordResetController extends Controller
             ]], 400);
         }
 
-        $data = DB::table('password_resets')->where(['token' => $request['reset_token'],'phone'=>$user->phone])->first();
+        $data = DB::table('password_resets')->where(['token' => $request['reset_token'], 'email' => $user->email])->first();
+
         if (isset($data)) {
             return response()->json(['message'=> translate('OTP_found,_you_can_proceed')], 200);
         } else{
@@ -133,7 +173,8 @@ class PasswordResetController extends Controller
             // $max_otp_hit_time = isset($otp_hit_time) ? $otp_hit_time->value : 30 ;
             $max_otp_hit_time = 60; // seconds
             $temp_block_time = 600; // seconds
-            $verification_data= DB::table('password_resets')->where('phone', $user->phone)->first();
+            $verification_data = DB::table('password_resets')->where('email', $user->email)->first();
+
 
             if(isset($verification_data)){
                 $time= $temp_block_time - Carbon::parse($verification_data->temp_block_time)->DiffInSeconds();
@@ -150,7 +191,8 @@ class PasswordResetController extends Controller
                 }
 
                 if($verification_data->is_temp_blocked == 1 && Carbon::parse($verification_data->created_at)->DiffInSeconds() >= $max_otp_hit_time){
-                    DB::table('password_resets')->updateOrInsert(['phone' => $user->phone],
+                    DB::table('password_resets')->updateOrInsert(
+                        ['email' => $user->email],
                         [
                             'otp_hit_count' => 0,
                             'is_temp_blocked' => 0,
@@ -161,7 +203,8 @@ class PasswordResetController extends Controller
 
                 if($verification_data->otp_hit_count >= $max_otp_hit &&  Carbon::parse($verification_data->created_at)->DiffInSeconds() < $max_otp_hit_time &&  $verification_data->is_temp_blocked == 0){
 
-                    DB::table('password_resets')->updateOrInsert(['phone' => $user->phone],
+                    DB::table('password_resets')->updateOrInsert(
+                        ['email' => $user->email],
                         [
                             'is_temp_blocked' => 1,
                             'temp_block_time' => now(),
@@ -175,8 +218,8 @@ class PasswordResetController extends Controller
                 }
             }
 
-
-            DB::table('password_resets')->updateOrInsert(['phone' => $user->phone],
+            DB::table('password_resets')->updateOrInsert(
+                ['email' => $user->email],
                 [
                     'otp_hit_count' => DB::raw('otp_hit_count + 1'),
                     'created_at' => now(),
@@ -192,7 +235,17 @@ class PasswordResetController extends Controller
     public function reset_password_submit(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'phone' => 'required|regex:/^([0-9\s\-\+\(\)]*)$/|min:9|exists:users,phone',
+            'phone' => [
+                'required', // The field is required
+                function ($attribute, $value, $fail) {
+                    if (
+                        !filter_var($value, FILTER_VALIDATE_EMAIL) &&
+                        !preg_match('/^([0-9\s\-\+\(\)]*)$/', $value)
+                    ) {
+                        $fail('The ' . $attribute . ' must be a valid phone number or email address.');
+                    }
+                },
+            ],
             'reset_token'=> 'required',
             'password' => ['required', Password::min(8)],
 
@@ -217,8 +270,15 @@ class PasswordResetController extends Controller
             ], 404);
         }
 
-        $user= User::where(['phone' => $request->phone])->first();
-        $data = DB::table('password_resets')->where(['token' => $request['reset_token'], 'phone' => $user?->phone])->first();
+        $phone = $request->phone;
+        $user = User::query()
+            ->when(filter_var($phone, FILTER_VALIDATE_EMAIL), function ($query) use ($phone) {
+                return $query->where('email', $phone);
+            }, function ($query) use ($phone) {
+                return $query->where('phone', $phone);
+            })
+            ->first();
+        $data = DB::table('password_resets')->where(['token' => $request['reset_token'], 'email' => $user?->email])->first();
 
         if (isset($data)) {
             if ($request['password'] == $request['confirm_password']) {
