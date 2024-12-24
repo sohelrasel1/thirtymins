@@ -42,7 +42,14 @@ class VendorLoginController extends Controller
         if($vendor_type == 'owner'){
             if (auth('vendor')->attempt($data)) {
                 $token = $this->genarate_token($request['email']);
-                $vendor = Vendor::where(['email' => $request['email']])->first();
+                $email = $request->email;
+                $vendor = Vendor::query()
+                    ->when(filter_var($email, FILTER_VALIDATE_EMAIL), function ($query) use ($email) {
+                        return $query->where('email', $email);
+                    }, function ($query) use ($email) {
+                        return $query->where('phone', $email);
+                    })
+                    ->first();
 
             $storeSubscriptionCheck=  $this->storeSubscriptionCheck($vendor?->stores[0],$vendor,$token);
 
@@ -65,7 +72,14 @@ class VendorLoginController extends Controller
 
             if (auth('vendor_employee')->attempt($data)) {
                 $token = $this->genarate_token($request['email']);
-                $vendor = VendorEmployee::where(['email' => $request['email']])->first();
+                $email = $request->email;
+                $vendor = VendorEmployee::query()
+                    ->when(filter_var($email, FILTER_VALIDATE_EMAIL), function ($query) use ($email) {
+                        return $query->where('email', $email);
+                    }, function ($query) use ($email) {
+                        return $query->where('phone', $email);
+                    })
+                    ->first();
                 $storeSubscriptionCheck=  $this->storeSubscriptionCheck($vendor?->store,$vendor,$token);
                 if(data_get($storeSubscriptionCheck,'type') != null){
                     return response()->json(data_get($storeSubscriptionCheck,'data'), data_get($storeSubscriptionCheck,'code'));
@@ -334,5 +348,4 @@ class VendorLoginController extends Controller
         }
         return null ;
     }
-
 }

@@ -30,7 +30,18 @@ class DMPasswordResetController extends Controller
             return response()->json(['errors' => Helpers::error_processor($validator)], 403);
         }
         $firebase_otp_verification = BusinessSetting::where('key', 'firebase_otp_verification')->first()->value??0;
+
+
         $deliveryman = DeliveryMan::Where(['phone' => $request['phone']])->first();
+
+        $phone = $request->phone;
+        $deliveryman = DeliveryMan::query()
+            ->when(filter_var($request->phone, FILTER_VALIDATE_EMAIL), function ($query) use ($phone) {
+                return $query->where('email', $phone);
+            }, function ($query) use ($phone) {
+                return $query->where('phone', $phone);
+            })
+            ->first();
 
         if (isset($deliveryman)) {
             if($firebase_otp_verification || env('APP_MODE') =='demo')
@@ -72,14 +83,14 @@ class DMPasswordResetController extends Controller
 
                 $response= null;
 
-                if (Helpers::getNotificationStatusData('deliveryman','deliveryman_forget_password','sms_status')) {
-                    $published_status = addon_published_status('Gateways');
-                    if($published_status == 1){
-                        $response = SmsGateway::send($request['phone'],$token);
-                    }else{
-                        $response = SMS_module::send($request['phone'],$token);
-                    }
-                }
+                // if (Helpers::getNotificationStatusData('deliveryman','deliveryman_forget_password','sms_status')) {
+                //     $published_status = addon_published_status('Gateways');
+                //     if($published_status == 1){
+                //         $response = SmsGateway::send($request['phone'],$token);
+                //     }else{
+                //         $response = SMS_module::send($request['phone'],$token);
+                //     }
+                // }
 
 
 //                    if (isset($request->fcm_token) && Helpers::getNotificationStatusData('deliveryman','deliveryman_forget_password','push_notification_status')) {
@@ -124,24 +135,43 @@ class DMPasswordResetController extends Controller
             }
         }
         $errors = [];
-        array_push($errors, ['code' => 'not-found', 'message' => 'Phone number not found!']);
+        array_push($errors, ['code' => 'not-found', 'message' => 'Phone or Email number not found!']);
         return response()->json(['errors' => $errors], 404);
     }
 
     public function verify_token(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'phone' => 'required|regex:/^([0-9\s\-\+\(\)]*)$/|min:10',
+            'phone' => [
+                'required', // The field is required
+                function ($attribute, $value, $fail) {
+                    if (
+                        !filter_var($value, FILTER_VALIDATE_EMAIL) &&
+                        !preg_match('/^([0-9\s\-\+\(\)]*)$/', $value)
+                    ) {
+                        $fail('The ' . $attribute . ' must be a valid phone number or email address.');
+                    }
+                },
+            ],
             'reset_token'=> 'required'
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => Helpers::error_processor($validator)], 403);
         }
-        $user=DeliveryMan::where('phone', $request->phone)->first();
+
+        $phone = $request->phone;
+        $user = DeliveryMan::query()
+            ->when(filter_var($phone, FILTER_VALIDATE_EMAIL), function ($query) use ($phone) {
+                return $query->where('email', $phone);
+            }, function ($query) use ($phone) {
+                return $query->where('phone', $phone);
+            })
+            ->first();
+
         if (!isset($user)) {
             $errors = [];
-            array_push($errors, ['code' => 'not-found', 'message' => 'Phone number not found!']);
+            array_push($errors, ['code' => 'not-found', 'message' => 'Phone  or Email not found!']);
             return response()->json(['errors' => $errors
             ], 404);
         }
@@ -224,7 +254,17 @@ class DMPasswordResetController extends Controller
     public function reset_password_submit(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'phone' => 'required|regex:/^([0-9\s\-\+\(\)]*)$/|min:10',
+                'phone' => [
+                    'required', // The field is required
+                    function ($attribute, $value, $fail) {
+                        if (
+                            !filter_var($value, FILTER_VALIDATE_EMAIL) &&
+                            !preg_match('/^([0-9\s\-\+\(\)]*)$/', $value)
+                        ) {
+                            $fail('The ' . $attribute . ' must be a valid phone number or email address.');
+                        }
+                    },
+                ],
             'reset_token'=> 'required',
             'password' => ['required', Password::min(8)->mixedCase()->letters()->numbers()->symbols()->uncompromised()],
             'confirm_password'=> 'required|same:password',

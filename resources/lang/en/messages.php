@@ -5958,4 +5958,5 @@ Smartly or Earn. ',
   'Ecommerce' => 'Ecommerce',
   349857 => '349857',
   'Email_or_Phone_number_not_found!' => 'Email or Phone number not found!',
+  'FOOD' => 'FOOD',
 );
